@@ -38,7 +38,7 @@ function isSpam(token) {
   return false;
 }
 
-// ─── CoinGecko map ────────────────────────────────────────────────────────────
+// ─── CoinGecko map (symbol → id) ─────────────────────────────────────────────
 const CG = {
   ETH:"ethereum", WETH:"weth", BTC:"bitcoin", WBTC:"wrapped-bitcoin",
   USDC:"usd-coin", USDT:"tether", DAI:"dai", FRAX:"frax", LUSD:"liquity-usd", BUSD:"binance-usd",
@@ -48,14 +48,44 @@ const CG = {
   MATIC:"matic-network", POL:"matic-network", ARB:"arbitrum", OP:"optimism",
   BNB:"binancecoin", AVAX:"avalanche-2", FTM:"fantom", SOL:"solana", CAKE:"pancakeswap-token",
   SHIB:"shiba-inu", PEPE:"pepe", DOGE:"dogecoin", FLOKI:"floki",
-  GRT:"the-graph", ENS:"ethereum-name-service", APE:"apecoin",
+  GRT:"the-graph", ENS:"ethereum-name-service",
   SAND:"the-sandbox", MANA:"decentraland", AXS:"axie-infinity",
   SUSHI:"sushi", "1INCH":"1inch", CVX:"convex-finance",
   FXS:"frax-share", LQTY:"liquity", DYDX:"dydx", GMX:"gmx", GNS:"gains-network",
   PENDLE:"pendle", ENA:"ethena", EIGEN:"eigenlayer",
   USDE:"ethena-usde", SUSDE:"ethena-staked-usde",
   CBETH:"coinbase-wrapped-staked-eth", WSTETH:"wrapped-steth",
+  XRP:"ripple",
 };
+
+// Known official contract addresses — tokens with same symbol but different
+// contract will NOT receive a price (prevents fake token value inflation)
+const KNOWN_CONTRACTS = {
+  "0x4d224452801aced8b2f0aebe155379bb5d594381": "APE",
+  "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9": "AAVE",
+  "0x514910771af9ca656af840dff83e8264ecf986ca": "LINK",
+  "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984": "UNI",
+  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC",
+  "0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT",
+  "0x2791bca1f2de4661ed88a30c99a7a9449aa84174": "USDC",
+  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC",
+  "0xaf88d065e77c8cc2239327c5edb3a432268e5831": "USDC",
+  "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8": "USDC",
+};
+
+// Symbols that commonly have fake versions on other chains
+const AMBIGUOUS_SYMBOLS = new Set(["APE","PEPE","SHIB","DOGE","FLOKI","XRP","SOL","BTC"]);
+
+function isKnownFake(token) {
+  if (!token.contractAddress) return false;
+  const addr = token.contractAddress.toLowerCase();
+  const sym = token.symbol.toUpperCase();
+  // If this is an ambiguous symbol AND the contract is not in our known list
+  if (AMBIGUOUS_SYMBOLS.has(sym) && !KNOWN_CONTRACTS[addr]) return true;
+  // If the contract IS known but maps to a different symbol
+  if (KNOWN_CONTRACTS[addr] && KNOWN_CONTRACTS[addr] !== sym) return true;
+  return false;
+}
 
 // ─── Alchemy API ──────────────────────────────────────────────────────────────
 async function alchemyRpc(networkKey, apiKey, method, params) {
@@ -93,7 +123,7 @@ async function fetchNetworkTokens(address, networkKey, apiKey) {
       const decimals = meta.decimals || 18;
       const balance = parseInt(t.tokenBalance, 16) / Math.pow(10, decimals);
       return { symbol: meta.symbol || "???", name: meta.name || "Unknown", balance, contractAddress: t.contractAddress, logoURI: meta.logo || null, network: networkKey, price: 0, change24h: 0 };
-    }).filter((t) => t.balance > 0.000001 && !isSpam(t));
+    }).filter((t) => t.balance > 0.000001 && !isSpam(t) && !isKnownFake(t));
 
     const tokens = [
       { symbol: net.nativeSymbol, name: net.nativeName, balance: nativeBal, contractAddress: null, logoURI: null, network: networkKey, price: 0, change24h: 0, coingeckoId: net.nativeCoingeckoId },
@@ -113,23 +143,51 @@ async function fetchAllNetworks(address, apiKey) {
   return results.map((r) => r.status === "fulfilled" ? r.value : { networkKey: "?", tokens: [], error: r.reason?.message });
 }
 
+async function fetchPricesBatch(ids, idMap) {
+  try {
+    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=usd&include_24hr_change=true`;
+    const res = await fetch(url);
+    if (res.status === 429) {
+      // Rate limited — wait 2s and retry once
+      await new Promise((r) => setTimeout(r, 2000));
+      const res2 = await fetch(url);
+      if (!res2.ok) return {};
+      const data2 = await res2.json();
+      const result = {};
+      ids.forEach((id) => { if (data2[id]) result[idMap[id]] = { price: data2[id].usd || 0, change24h: data2[id].usd_24h_change || 0 }; });
+      return result;
+    }
+    const data = await res.json();
+    const result = {};
+    ids.forEach((id) => { if (data[id]) result[idMap[id]] = { price: data[id].usd || 0, change24h: data[id].usd_24h_change || 0 }; });
+    return result;
+  } catch { return {}; }
+}
+
 async function fetchPrices(tokens) {
-  const idMap = {};
+  const idMap = {}; // coingeckoId -> symbol
   tokens.forEach((t) => {
+    // Skip known fake tokens — don't assign price
+    if (isKnownFake(t)) return;
     const id = t.coingeckoId || CG[t.symbol?.toUpperCase()];
-    if (id) idMap[id] = t.symbol.toUpperCase();
+    if (id && !idMap[id]) idMap[id] = t.symbol.toUpperCase();
   });
   const ids = Object.keys(idMap);
   if (!ids.length) return {};
-  try {
-    const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=usd&include_24hr_change=true`);
-    const data = await res.json();
-    const result = {};
-    ids.forEach((id) => {
-      if (data[id]) result[idMap[id]] = { price: data[id].usd || 0, change24h: data[id].usd_24h_change || 0 };
-    });
-    return result;
-  } catch { return {}; }
+
+  // Batch into groups of 25 to avoid CoinGecko rate limits
+  const BATCH = 25;
+  const results = {};
+  for (let i = 0; i < ids.length; i += BATCH) {
+    const batch = ids.slice(i, i + BATCH);
+    const batchMap = {};
+    batch.forEach((id) => { batchMap[id] = idMap[id]; });
+    const batchResult = await fetchPricesBatch(batch, batchMap);
+    Object.assign(results, batchResult);
+    // Small delay between batches
+    if (i + BATCH < ids.length) await new Promise((r) => setTimeout(r, 300));
+  }
+  return results;
 }
 
 async function fetchTransactions(address, networkKey, apiKey) {
