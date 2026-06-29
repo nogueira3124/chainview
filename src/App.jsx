@@ -45,7 +45,7 @@ const CG = {
   UNI:"uniswap", AAVE:"aave", LINK:"chainlink", CRV:"curve-dao-token",
   MKR:"maker", SNX:"havven", COMP:"compound-governance-token", BAL:"balancer", YFI:"yearn-finance",
   LDO:"lido-dao", RPL:"rocket-pool", STETH:"staked-ether", RETH:"rocket-pool-eth",
-  MATIC:"matic-network", POL:"matic-network", ARB:"arbitrum", OP:"optimism",
+  MATIC:"matic-network", POL:"matic-network", WMATIC:"matic-network", ARB:"arbitrum", OP:"optimism",
   BNB:"binancecoin", AVAX:"avalanche-2", FTM:"fantom", SOL:"solana", CAKE:"pancakeswap-token",
   SHIB:"shiba-inu", PEPE:"pepe", DOGE:"dogecoin", FLOKI:"floki",
   GRT:"the-graph", ENS:"ethereum-name-service",
@@ -719,7 +719,8 @@ export default function App() {
   // Load overview data for all wallets
   useEffect(() => {
     wallets.forEach(async (w) => {
-      if (walletsData[w.address]) return;
+      // Skip only if we already have data with tokens
+      if (walletsData[w.address] && walletsData[w.address].length > 0) return;
       if (!apiKey) {
         // Different mock data per wallet to avoid duplicate display
         const idx = wallets.findIndex((x) => x.address === w.address);
@@ -759,13 +760,15 @@ export default function App() {
   const saveApiKey = (key) => {
     setApiKey(key);
     setWalletsData({});
+    PRICE_CACHE.data = {};
+    PRICE_CACHE.ts = 0;
+    PRICE_CACHE.pending = null;
     if (key) localStorage.setItem("chainview_api_key", key);
     else localStorage.removeItem("chainview_api_key");
   };
 
   const setCoinGeckoKey = (key) => {
     setCoinGeckoKeyState(key);
-    // Reset price cache so new key is used immediately
     PRICE_CACHE.data = {};
     PRICE_CACHE.ts = 0;
     PRICE_CACHE.pending = null;
