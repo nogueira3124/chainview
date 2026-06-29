@@ -160,23 +160,27 @@ async function fetchAllPricesOnce() {
   if (PRICE_CACHE.pending) return PRICE_CACHE.pending;
 
   PRICE_CACHE.pending = (async () => {
-    const BATCH = 50;
+    const cgKey = localStorage.getItem("chainview_cg_key") || "";
+    const baseUrl = "https://api.coingecko.com/api/v3";
+    const headers = cgKey ? { "x-cg-demo-api-key": cgKey } : {};
+    const BATCH = cgKey ? 100 : 50;
+    const DELAY = cgKey ? 200 : 600;
     const result = {};
     for (let i = 0; i < ALL_CG_IDS.length; i += BATCH) {
       const batch = ALL_CG_IDS.slice(i, i + BATCH);
       try {
-        const url = `https://api.coingecko.com/api/v3/simple/price?ids=${batch.join(",")}&vs_currencies=usd&include_24hr_change=true`;
-        let res = await fetch(url);
+        const url = `${baseUrl}/simple/price?ids=${batch.join(",")}&vs_currencies=usd&include_24hr_change=true`;
+        let res = await fetch(url, { headers });
         if (res.status === 429) {
           await new Promise((r) => setTimeout(r, 3000));
-          res = await fetch(url);
+          res = await fetch(url, { headers });
         }
         if (res.ok) {
           const data = await res.json();
           Object.assign(result, data);
         }
       } catch { /* skip batch on error */ }
-      if (i + BATCH < ALL_CG_IDS.length) await new Promise((r) => setTimeout(r, 500));
+      if (i + BATCH < ALL_CG_IDS.length) await new Promise((r) => setTimeout(r, DELAY));
     }
     // Build symbol -> { price, change24h } map
     const priceMap = {};
@@ -290,8 +294,9 @@ const TxBadge = ({ type }) => {
 };
 
 // ─── Settings Modal ───────────────────────────────────────────────────────────
-function SettingsModal({ onClose, apiKey, setApiKey }) {
+function SettingsModal({ onClose, apiKey, setApiKey, coinGeckoKey, setCoinGeckoKey }) {
   const [key, setKey] = useState(apiKey);
+  const [cgKey, setCgKey] = useState(coinGeckoKey);
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
@@ -301,10 +306,13 @@ function SettingsModal({ onClose, apiKey, setApiKey }) {
         </div>
         <label className="block text-slate-400 text-sm mb-1">Alchemy API Key</label>
         <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="ex: kwM-2vnGHr2dttI0vMdOl"
-          className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-blue-500 mb-3" />
-        <p className="text-slate-500 text-xs mb-5 leading-relaxed">Guardada apenas no teu browser. Sem chave, a app usa dados simulados.</p>
+          className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-blue-500 mb-4" />
+        <label className="block text-slate-400 text-sm mb-1">CoinGecko Demo API Key</label>
+        <input type="password" value={cgKey} onChange={(e) => setCgKey(e.target.value)} placeholder="ex: CG-xxxxxxxxxxxxxxxxxxxx"
+          className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-emerald-500 mb-3" />
+        <p className="text-slate-500 text-xs mb-5 leading-relaxed">Ambas as chaves são guardadas apenas no teu browser. A chave CoinGecko melhora os preços e aumenta os limites da API.</p>
         <div className="flex gap-3">
-          <button onClick={() => { setApiKey(key); onClose(); }} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg py-2 text-sm font-medium transition-colors">Guardar</button>
+          <button onClick={() => { setApiKey(key); setCoinGeckoKey(cgKey); onClose(); }} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg py-2 text-sm font-medium transition-colors">Guardar</button>
           <button onClick={onClose} className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg py-2 text-sm transition-colors">Cancelar</button>
         </div>
       </div>
@@ -703,6 +711,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAddWallet, setShowAddWallet] = useState(false);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("chainview_api_key") || "");
+  const [coinGeckoKey, setCoinGeckoKeyState] = useState(() => localStorage.getItem("chainview_cg_key") || "");
   const [walletsData, setWalletsData] = useState({});
 
   useEffect(() => { localStorage.setItem("chainview_wallets", JSON.stringify(wallets)); }, [wallets]);
@@ -754,6 +763,17 @@ export default function App() {
     else localStorage.removeItem("chainview_api_key");
   };
 
+  const setCoinGeckoKey = (key) => {
+    setCoinGeckoKeyState(key);
+    // Reset price cache so new key is used immediately
+    PRICE_CACHE.data = {};
+    PRICE_CACHE.ts = 0;
+    PRICE_CACHE.pending = null;
+    setWalletsData({});
+    if (key) localStorage.setItem("chainview_cg_key", key);
+    else localStorage.removeItem("chainview_cg_key");
+  };
+
   const addWallet = (w) => {
     setWallets((prev) => prev.find((x) => x.address === w.address) ? prev : [...prev, w]);
     setSelectedWallet(w.address);
@@ -774,7 +794,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} apiKey={apiKey} setApiKey={saveApiKey} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} apiKey={apiKey} setApiKey={saveApiKey} coinGeckoKey={coinGeckoKey} setCoinGeckoKey={setCoinGeckoKey} />}
       {showAddWallet && <AddWalletModal onClose={() => setShowAddWallet(false)} onAdd={addWallet} />}
 
       <header className="border-b border-slate-800 px-6 py-4 flex items-center justify-between sticky top-0 bg-slate-950/95 backdrop-blur-sm z-10">
