@@ -233,6 +233,77 @@ async function fetchTransactions(address, networkKey, apiKey) {
   } catch { return []; }
 }
 
+
+// ─── DeFi receipt token detection ────────────────────────────────────────────
+// Detects DeFi positions from "receipt tokens" that appear in the wallet.
+// When you stake/lend, protocols give you a token representing your position.
+const DEFI_PROTOCOLS = [
+  // Aave V3 — aTokens
+  { match: (s, n) => /^a[A-Z]/.test(s) && /aave/i.test(n), protocol: "Aave V3", type: "Lending", logo: "https://cryptologos.cc/logos/aave-aave-logo.png", baseApy: 3.5 },
+  { match: (s, n) => /^aeth|^apol|^aarb|^abas|^aopt|^aava/i.test(s), protocol: "Aave V3", type: "Lending", logo: "https://cryptologos.cc/logos/aave-aave-logo.png", baseApy: 3.5 },
+  // Aave variable debt
+  { match: (s, n) => /variabledebt/i.test(n) || /^variabledebt/i.test(s), protocol: "Aave V3", type: "Borrowing", logo: "https://cryptologos.cc/logos/aave-aave-logo.png", baseApy: 0 },
+  // Compound — cTokens
+  { match: (s, n) => /^c[A-Z]/.test(s) && /compound/i.test(n), protocol: "Compound", type: "Lending", logo: "https://cryptologos.cc/logos/compound-comp-logo.png", baseApy: 2.8 },
+  // Lido — stETH / wstETH
+  { match: (s, n) => /^wsteth$|^steth$/i.test(s), protocol: "Lido", type: "Staking", logo: "https://cryptologos.cc/logos/lido-dao-ldo-logo.png", baseApy: 3.2 },
+  // Rocket Pool — rETH
+  { match: (s, n) => /^reth$/i.test(s), protocol: "Rocket Pool", type: "Staking", logo: "https://cryptologos.cc/logos/rocket-pool-rpl-logo.png", baseApy: 3.0 },
+  // Coinbase — cbETH
+  { match: (s, n) => /^cbeth$/i.test(s), protocol: "Coinbase Staking", type: "Staking", logo: null, baseApy: 2.6 },
+  // Curve LP tokens
+  { match: (s, n) => /curve/i.test(n) && /(lp|pool|crv)/i.test(n), protocol: "Curve", type: "Liquidity Pool", logo: "https://cryptologos.cc/logos/curve-dao-token-crv-logo.png", baseApy: 5.5 },
+  // Convex
+  { match: (s, n) => /^cvx/i.test(s) && /convex/i.test(n), protocol: "Convex", type: "Staking", logo: null, baseApy: 8.0 },
+  // Uniswap V2 LP
+  { match: (s, n) => /uniswap.*v2/i.test(n) || /^UNI-V2$/i.test(s), protocol: "Uniswap V2", type: "Liquidity Pool", logo: "https://cryptologos.cc/logos/uniswap-uni-logo.png", baseApy: 12.0 },
+  // Pendle
+  { match: (s, n) => /^pt-|^yt-|^lp-/i.test(s) || /pendle/i.test(n), protocol: "Pendle", type: "Staking", logo: null, baseApy: 10.0 },
+  // Yearn vaults
+  { match: (s, n) => /^yv[A-Z]/.test(s) || /yearn/i.test(n), protocol: "Yearn", type: "Staking", logo: null, baseApy: 6.0 },
+  // Beefy
+  { match: (s, n) => /^moo[A-Z]/.test(s) || /beefy/i.test(n), protocol: "Beefy", type: "Staking", logo: null, baseApy: 9.0 },
+  // Stargate
+  { match: (s, n) => /^s\*/i.test(s) || /stargate/i.test(n), protocol: "Stargate", type: "Liquidity Pool", logo: null, baseApy: 7.0 },
+];
+
+function detectDeFiPosition(token) {
+  const sym = token.symbol || "";
+  const name = token.name || "";
+  for (const proto of DEFI_PROTOCOLS) {
+    if (proto.match(sym, name)) {
+      return { protocol: proto.protocol, type: proto.type, logo: proto.logo, baseApy: proto.baseApy };
+    }
+  }
+  return null;
+}
+
+// Build DeFi positions from wallet tokens (receipt token method — zero cost)
+function buildDeFiFromTokens(walletsData) {
+  const positions = [];
+  Object.entries(walletsData).forEach(([address, tokens]) => {
+    (tokens || []).forEach((t) => {
+      const detected = detectDeFiPosition(t);
+      if (detected && t.price > 0 && t.balance * t.price > 0.5) {
+        const value = t.balance * t.price;
+        positions.push({
+          id: `${address}-${t.symbol}-${t.network}`,
+          protocol: detected.protocol,
+          protocolLogo: detected.logo,
+          chain: t.network,
+          type: detected.type,
+          rawType: detected.type,
+          token: t,
+          netValue: value,
+          apy: detected.baseApy,
+          address,
+        });
+      }
+    });
+  });
+  return positions.sort((a, b) => b.netValue - a.netValue);
+}
+
 // ─── DeBank API ───────────────────────────────────────────────────────────────
 const DEBANK_BASE = "https://pro-openapi.debank.com/v1";
 
@@ -885,53 +956,19 @@ function DeFiPositionCard({ position }) {
 }
 
 // ─── DeFi View ────────────────────────────────────────────────────────────────
-function DeFiView({ wallets, debankKey }) {
-  const [data, setData] = useState({ positions: [], tokens: [], loading: false, error: null, loaded: false });
+function DeFiView({ wallets, walletsData }) {
   const [filterType, setFilterType] = useState("all");
 
-  const loadAll = useCallback(async () => {
-    if (!debankKey || wallets.length === 0) return;
-    setData((p) => ({ ...p, loading: true, error: null }));
+  // Build positions from receipt tokens already loaded in walletsData
+  const positions = buildDeFiFromTokens(walletsData);
 
-    const allPositions = [];
-    const allTokens = {};
+  const totalDeFi = positions.reduce((s, p) => s + p.netValue, 0);
+  const totalYearly = positions.reduce((s, p) => s + (p.apy ? p.netValue * p.apy / 100 : 0), 0);
 
-    await Promise.allSettled(wallets.map(async (w) => {
-      const result = await fetchDeBankPositions(w.address, debankKey);
-      allPositions.push(...result.positions);
-      result.tokens.forEach((t) => {
-        const key = t.symbol.toUpperCase();
-        if (!allTokens[key]) allTokens[key] = { ...t, totalBalance: 0, totalValue: 0 };
-        allTokens[key].totalBalance += t.balance;
-        allTokens[key].totalValue += t.value;
-      });
-    }));
+  const types = ["all", ...new Set(positions.map((p) => p.type))];
+  const filtered = filterType === "all" ? positions : positions.filter((p) => p.type === filterType);
 
-    setData({
-      positions: allPositions.sort((a, b) => b.netValue - a.netValue),
-      tokens: Object.values(allTokens).sort((a, b) => b.totalValue - a.totalValue),
-      loading: false,
-      error: null,
-      loaded: true,
-    });
-  }, [wallets, debankKey]);
-
-  useEffect(() => { loadAll(); }, [loadAll]);
-
-  const totalDeFi = data.positions.reduce((s, p) => s + p.netValue, 0);
-  const totalYearly = data.positions.reduce((s, p) => s + (p.apy ? p.netValue * p.apy / 100 : 0), 0);
-
-  const types = ["all", ...new Set(data.positions.map((p) => p.type))];
-  const filtered = filterType === "all" ? data.positions : data.positions.filter((p) => p.type === filterType);
-
-  if (!debankKey) return (
-    <div className="text-center py-20 text-slate-500">
-      <p className="text-4xl mb-4">🌾</p>
-      <p className="text-lg font-medium text-slate-300 mb-2">DeBank API não configurada</p>
-      <p className="text-sm mb-4">Adiciona a tua DeBank API key nas configurações para ver as posições DeFi reais.</p>
-      <button onClick={() => {}} className="text-blue-400 hover:text-blue-300 text-sm">⚙ Abrir configurações</button>
-    </div>
-  );
+  const dataLoaded = wallets.every((w) => walletsData[w.address] !== undefined);
 
   if (wallets.length === 0) return (
     <div className="text-center py-20 text-slate-500">
@@ -954,50 +991,88 @@ function DeFiView({ wallets, debankKey }) {
         </div>
         <div className="bg-slate-800/50 rounded-xl border border-slate-700 p-4">
           <p className="text-slate-400 text-xs mb-1">Posições Ativas</p>
-          <p className="text-2xl font-bold text-white">{data.positions.length}</p>
+          <p className="text-2xl font-bold text-white">{positions.length}</p>
         </div>
       </div>
 
+      {/* Info banner */}
+      <div className="bg-blue-950/30 border border-blue-800/40 rounded-xl px-4 py-3">
+        <p className="text-blue-200 text-xs leading-relaxed">
+          💡 As posições são detetadas automaticamente pelos <strong>receipt tokens</strong> nas tuas carteiras (aTokens da Aave, stETH da Lido, etc.). Os APY são estimativas baseadas em médias do protocolo.
+        </p>
+      </div>
+
       {/* Loading */}
-      {data.loading && (
+      {!dataLoaded && (
         <div className="flex flex-col items-center justify-center py-12 gap-3">
           <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
-          <p className="text-slate-500 text-sm">A carregar posições DeFi via DeBank…</p>
-        </div>
-      )}
-
-      {/* Error */}
-      {data.error && (
-        <div className="bg-red-900/20 border border-red-700/40 rounded-xl p-4">
-          <p className="text-red-300 text-sm">Erro ao carregar: {data.error}</p>
+          <p className="text-slate-500 text-sm">A analisar posições DeFi…</p>
         </div>
       )}
 
       {/* Filter tabs */}
-      {data.positions.length > 0 && (
+      {positions.length > 0 && (
         <div className="flex gap-2 flex-wrap">
           {types.map((t) => (
             <button key={t} onClick={() => setFilterType(t)}
               className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${filterType === t ? "bg-blue-600 border-blue-500 text-white" : "border-slate-700 text-slate-400 hover:text-white"}`}>
-              {t === "all" ? `Todas (${data.positions.length})` : `${t} (${data.positions.filter(p => p.type === t).length})`}
+              {t === "all" ? `Todas (${positions.length})` : `${t} (${positions.filter(p => p.type === t).length})`}
             </button>
           ))}
-          <button onClick={loadAll} className="text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-400 hover:text-white transition-all ml-auto">
-            ↻ Atualizar
-          </button>
         </div>
       )}
 
       {/* Positions */}
       <div className="space-y-3">
-        {filtered.map((p) => <DeFiPositionCard key={p.id} position={p} />)}
-        {data.loaded && filtered.length === 0 && !data.loading && (
+        {filtered.map((p) => <DeFiReceiptCard key={p.id} position={p} />)}
+        {dataLoaded && positions.length === 0 && (
           <div className="text-center py-12 text-slate-500">
             <p className="text-4xl mb-3">🌾</p>
-            <p>Nenhuma posição DeFi encontrada.</p>
+            <p>Nenhuma posição DeFi detetada nas tuas carteiras.</p>
+            <p className="text-xs mt-2">As posições aparecem automaticamente quando tens tokens de protocolos como Aave, Lido, Curve, etc.</p>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── DeFi Receipt Card ────────────────────────────────────────────────────────
+function DeFiReceiptCard({ position }) {
+  const typeColor = TYPE_COLORS[position.type] || TYPE_COLORS["Other"];
+  const yearlyYield = position.apy ? (position.netValue * position.apy / 100) : null;
+  const t = position.token;
+
+  return (
+    <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4 hover:border-slate-500 transition-colors">
+      <div className="flex justify-between items-start">
+        <div className="flex items-center gap-3">
+          {position.protocolLogo ? (
+            <img src={position.protocolLogo} alt={position.protocol} className="w-9 h-9 rounded-xl object-cover" onError={(e) => { e.target.style.display="none"; e.target.nextSibling.style.display="flex"; }} />
+          ) : null}
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-700 to-blue-700 items-center justify-center text-white font-bold text-sm" style={{ display: position.protocolLogo ? "none" : "flex" }}>
+            {position.protocol[0]}
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-white font-semibold">{position.protocol}</p>
+              <span className={`text-xs px-2 py-0.5 rounded-full border ${typeColor}`}>{position.type}</span>
+            </div>
+            <p className="text-slate-500 text-xs mt-0.5">
+              {t.symbol} · {t.balance?.toFixed(4)} · {position.chain}
+            </p>
+          </div>
+        </div>
+        <div className="text-right">
+          <p className="text-white font-bold text-lg">${position.netValue.toFixed(2)}</p>
+          {position.apy > 0 && (
+            <p className="text-emerald-400 text-sm">~{position.apy.toFixed(1)}% APY</p>
+          )}
+        </div>
+      </div>
+      {yearlyYield > 0 && (
+        <p className="text-slate-500 text-xs mt-2">Yield anual estimado: <span className="text-emerald-400">${yearlyYield.toFixed(2)}</span></p>
+      )}
     </div>
   );
 }
@@ -1165,7 +1240,7 @@ export default function App() {
           </div>
         )}
 
-        {tab === "defi" && <DeFiView wallets={wallets} debankKey={debankKey} />}
+        {tab === "defi" && <DeFiView wallets={wallets} walletsData={walletsData} />}
       </main>
     </div>
   );
