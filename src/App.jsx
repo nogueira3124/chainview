@@ -238,34 +238,42 @@ async function fetchTransactions(address, networkKey, apiKey) {
 // Detects DeFi positions from "receipt tokens" that appear in the wallet.
 // When you stake/lend, protocols give you a token representing your position.
 const DEFI_PROTOCOLS = [
-  // Aave V3 — aTokens
-  { match: (s, n) => /^a[A-Z]/.test(s) && /aave/i.test(n), protocol: "Aave V3", type: "Lending", logo: "https://cryptologos.cc/logos/aave-aave-logo.png", baseApy: 3.5 },
-  { match: (s, n) => /^aeth|^apol|^aarb|^abas|^aopt|^aava/i.test(s), protocol: "Aave V3", type: "Lending", logo: "https://cryptologos.cc/logos/aave-aave-logo.png", baseApy: 3.5 },
-  // Aave variable debt
+  // Aave V3 — aTokens (aPolWBTC, aEthUSDC, aArbDAI, etc.) — the underlying is after the chain prefix
+  { match: (s, n) => /^a(eth|pol|arb|base|opt|ava|bnb)[A-Z]/i.test(s) || (/^a[A-Z]/.test(s) && /aave/i.test(n)), protocol: "Aave V3", type: "Lending", logo: "https://cryptologos.cc/logos/aave-aave-logo.png", baseApy: 3.5, aToken: true },
+  // Aave variable debt (dívida)
   { match: (s, n) => /variabledebt/i.test(n) || /^variabledebt/i.test(s), protocol: "Aave V3", type: "Borrowing", logo: "https://cryptologos.cc/logos/aave-aave-logo.png", baseApy: 0 },
-  // Compound — cTokens
+  // Compound — cTokens (must have "compound" in name to avoid false positives)
   { match: (s, n) => /^c[A-Z]/.test(s) && /compound/i.test(n), protocol: "Compound", type: "Lending", logo: "https://cryptologos.cc/logos/compound-comp-logo.png", baseApy: 2.8 },
-  // Lido — stETH / wstETH
+  // Lido — stETH / wstETH (exact match)
   { match: (s, n) => /^wsteth$|^steth$/i.test(s), protocol: "Lido", type: "Staking", logo: "https://cryptologos.cc/logos/lido-dao-ldo-logo.png", baseApy: 3.2 },
-  // Rocket Pool — rETH
+  // Rocket Pool — rETH (exact)
   { match: (s, n) => /^reth$/i.test(s), protocol: "Rocket Pool", type: "Staking", logo: "https://cryptologos.cc/logos/rocket-pool-rpl-logo.png", baseApy: 3.0 },
-  // Coinbase — cbETH
+  // Coinbase — cbETH (exact)
   { match: (s, n) => /^cbeth$/i.test(s), protocol: "Coinbase Staking", type: "Staking", logo: null, baseApy: 2.6 },
-  // Curve LP tokens
-  { match: (s, n) => /curve/i.test(n) && /(lp|pool|crv)/i.test(n), protocol: "Curve", type: "Liquidity Pool", logo: "https://cryptologos.cc/logos/curve-dao-token-crv-logo.png", baseApy: 5.5 },
-  // Convex
+  // Curve LP tokens (must be clearly an LP)
+  { match: (s, n) => /curve/i.test(n) && /(lp|pool)/i.test(n), protocol: "Curve", type: "Liquidity Pool", logo: "https://cryptologos.cc/logos/curve-dao-token-crv-logo.png", baseApy: 5.5 },
+  // Convex (cvx prefix + convex in name)
   { match: (s, n) => /^cvx/i.test(s) && /convex/i.test(n), protocol: "Convex", type: "Staking", logo: null, baseApy: 8.0 },
-  // Uniswap V2 LP
-  { match: (s, n) => /uniswap.*v2/i.test(n) || /^UNI-V2$/i.test(s), protocol: "Uniswap V2", type: "Liquidity Pool", logo: "https://cryptologos.cc/logos/uniswap-uni-logo.png", baseApy: 12.0 },
-  // Pendle
-  { match: (s, n) => /^pt-|^yt-|^lp-/i.test(s) || /pendle/i.test(n), protocol: "Pendle", type: "Staking", logo: null, baseApy: 10.0 },
-  // Yearn vaults
-  { match: (s, n) => /^yv[A-Z]/.test(s) || /yearn/i.test(n), protocol: "Yearn", type: "Staking", logo: null, baseApy: 6.0 },
-  // Beefy
-  { match: (s, n) => /^moo[A-Z]/.test(s) || /beefy/i.test(n), protocol: "Beefy", type: "Staking", logo: null, baseApy: 9.0 },
-  // Stargate
-  { match: (s, n) => /^s\*/i.test(s) || /stargate/i.test(n), protocol: "Stargate", type: "Liquidity Pool", logo: null, baseApy: 7.0 },
+  // Uniswap V2 LP (exact symbol)
+  { match: (s, n) => /^UNI-V2$/i.test(s), protocol: "Uniswap V2", type: "Liquidity Pool", logo: "https://cryptologos.cc/logos/uniswap-uni-logo.png", baseApy: 12.0 },
+  // Pendle — ONLY the PT/YT/LP receipt tokens, NOT the PENDLE governance token
+  { match: (s, n) => /^(pt|yt|lp)-/i.test(s), protocol: "Pendle", type: "Staking", logo: null, baseApy: 10.0 },
+  // Yearn vaults (yv prefix)
+  { match: (s, n) => /^yv[A-Z]/.test(s), protocol: "Yearn", type: "Staking", logo: null, baseApy: 6.0 },
+  // Beefy (moo prefix)
+  { match: (s, n) => /^moo[A-Z]/.test(s), protocol: "Beefy", type: "Staking", logo: null, baseApy: 9.0 },
 ];
+
+// Underlying token map for pricing aTokens etc (aPolWBTC -> WBTC)
+function getUnderlyingSymbol(symbol) {
+  let s = symbol;
+  // Remove Aave chain prefixes: aPol, aEth, aArb, aBase, aOpt, aAva, aBnb
+  s = s.replace(/^a(eth|pol|arb|base|opt|ava|bnb)/i, "");
+  // Remove single-letter protocol prefixes
+  s = s.replace(/^(a|c|yv|moo)/i, "");
+  // Remove wrapper prefixes
+  return s.toUpperCase();
+}
 
 function detectDeFiPosition(token) {
   const sym = token.symbol || "";
@@ -280,25 +288,46 @@ function detectDeFiPosition(token) {
 
 // Build DeFi positions from wallet tokens (receipt token method — zero cost)
 function buildDeFiFromTokens(walletsData) {
+  // First, build a price lookup for all tokens by symbol (to price aTokens via underlying)
+  const priceBySymbol = {};
+  Object.values(walletsData).forEach((tokens) => {
+    (tokens || []).forEach((t) => {
+      if (t.price > 0) priceBySymbol[t.symbol.toUpperCase()] = t.price;
+    });
+  });
+  // Also use the global price cache
+  Object.entries(PRICE_CACHE.data || {}).forEach(([sym, d]) => {
+    if (d.price > 0 && !priceBySymbol[sym]) priceBySymbol[sym] = d.price;
+  });
+
   const positions = [];
   Object.entries(walletsData).forEach(([address, tokens]) => {
     (tokens || []).forEach((t) => {
       const detected = detectDeFiPosition(t);
-      if (detected && t.price > 0 && t.balance * t.price > 0.5) {
-        const value = t.balance * t.price;
-        positions.push({
-          id: `${address}-${t.symbol}-${t.network}`,
-          protocol: detected.protocol,
-          protocolLogo: detected.logo,
-          chain: t.network,
-          type: detected.type,
-          rawType: detected.type,
-          token: t,
-          netValue: value,
-          apy: detected.baseApy,
-          address,
-        });
+      if (!detected) return;
+
+      // Get price — either direct, or via underlying token
+      let price = t.price;
+      if (price <= 0) {
+        const underlying = getUnderlyingSymbol(t.symbol);
+        price = priceBySymbol[underlying] || 0;
       }
+
+      const value = t.balance * price;
+      if (value < 0.5) return;
+
+      positions.push({
+        id: `${address}-${t.symbol}-${t.network}`,
+        protocol: detected.protocol,
+        protocolLogo: detected.logo,
+        chain: t.network,
+        type: detected.type,
+        rawType: detected.type,
+        token: { ...t, price },
+        netValue: value,
+        apy: detected.baseApy,
+        address,
+      });
     });
   });
   return positions.sort((a, b) => b.netValue - a.netValue);
