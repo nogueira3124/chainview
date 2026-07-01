@@ -817,17 +817,67 @@ function WalletDetail({ wallet, apiKey }) {
 function OverviewView({ wallets, walletsData, apiKey }) {
   const allTokens = {};
   let grand = 0;
+  let walletValue = 0;
+  let defiValue = 0;
   wallets.forEach((w) => {
     (walletsData[w.address] || []).forEach((t) => {
       const val = t.balance * t.price;
       grand += val;
+      const isDeFi = !!detectDeFiPosition(t);
+      if (isDeFi) defiValue += val; else walletValue += val;
       const key = t.symbol.toUpperCase();
-      if (!allTokens[key]) allTokens[key] = { ...t, totalBalance:0, totalValue:0 };
+      if (!allTokens[key]) allTokens[key] = { ...t, totalBalance: 0, totalValue: 0, isDeFi };
       allTokens[key].totalBalance += t.balance;
       allTokens[key].totalValue += val;
     });
   });
-  const tokenList = Object.values(allTokens).sort((a,b) => b.totalValue - a.totalValue);
+  const tokenList = Object.values(allTokens).sort((a, b) => b.totalValue - a.totalValue);
+  const walletTokens = tokenList.filter((t) => !t.isDeFi);
+  const defiTokens = tokenList.filter((t) => t.isDeFi);
+  const walletPct = grand > 0 ? (walletValue / grand) * 100 : 0;
+  const defiPct = grand > 0 ? (defiValue / grand) * 100 : 0;
+
+  const renderTable = (list, sectionTotal) => (
+    <div className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-slate-500 border-b border-slate-800 text-xs uppercase tracking-wider">
+            <th className="text-left py-2 px-4">Token</th>
+            <th className="text-right py-2 px-4">Saldo Total</th>
+            <th className="text-right py-2 px-4">Valor</th>
+            <th className="text-right py-2 px-4">% Secção</th>
+            <th className="text-right py-2 px-4">24h</th>
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((t) => {
+            const pct = sectionTotal > 0 ? (t.totalValue / sectionTotal) * 100 : 0;
+            return (
+              <tr key={t.symbol} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+                <td className="py-3 px-4">
+                  <div className="flex items-center gap-2">
+                    <TokenIcon symbol={t.symbol} logo={t.logoURI} />
+                    <div><span className="text-white font-medium">{t.symbol}</span><p className="text-slate-500 text-xs">{t.name}</p></div>
+                  </div>
+                </td>
+                <td className="py-3 px-4 text-right text-slate-300 font-mono">{fmt(t.totalBalance, 4)}</td>
+                <td className="py-3 px-4 text-right text-white font-semibold">{t.totalValue > 0 ? fmtUSD(t.totalValue) : "—"}</td>
+                <td className="py-3 px-4 text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    <div className="w-16 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${t.isDeFi ? "bg-emerald-500" : "bg-blue-500"}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+                    </div>
+                    <span className="text-slate-400 text-xs w-10 text-right">{pct.toFixed(1)}%</span>
+                  </div>
+                </td>
+                <td className="py-3 px-4 text-right">{t.price > 0 ? <ChangeCell v={t.change24h} /> : <span className="text-slate-600">—</span>}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 
   return (
     <div className="space-y-6">
@@ -839,56 +889,44 @@ function OverviewView({ wallets, walletsData, apiKey }) {
           </div>
           {!apiKey && <span className="text-xs bg-amber-900/40 border border-amber-700/40 text-amber-300 px-2 py-1 rounded-full">Dados demo</span>}
         </div>
-        <div className="flex gap-8">
-          <div><p className="text-slate-400 text-xs">Carteiras</p><p className="text-blue-300 font-semibold">{fmtUSD(grand)}</p></div>
+
+        {grand > 0 && (
+          <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden flex mb-4">
+            {walletPct > 0 && <div className="h-full bg-blue-500" style={{ width: `${walletPct}%` }} />}
+            {defiPct > 0 && <div className="h-full bg-emerald-500" style={{ width: `${defiPct}%` }} />}
+          </div>
+        )}
+
+        <div className="flex gap-8 flex-wrap">
+          <div>
+            <p className="text-slate-400 text-xs flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />Carteiras</p>
+            <p className="text-blue-300 font-semibold">{fmtUSD(walletValue)} <span className="text-slate-500 text-xs font-normal">({walletPct.toFixed(1)}%)</span></p>
+          </div>
+          <div>
+            <p className="text-slate-400 text-xs flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />DeFi</p>
+            <p className="text-emerald-300 font-semibold">{fmtUSD(defiValue)} <span className="text-slate-500 text-xs font-normal">({defiPct.toFixed(1)}%)</span></p>
+          </div>
           <div><p className="text-slate-400 text-xs">Tokens únicos</p><p className="text-slate-300 font-semibold">{tokenList.length}</p></div>
           <div><p className="text-slate-400 text-xs">Nº Carteiras</p><p className="text-slate-300 font-semibold">{wallets.length}</p></div>
           <div><p className="text-slate-400 text-xs">Redes</p><p className="text-slate-300 font-semibold">7</p></div>
         </div>
       </div>
 
-      {tokenList.length > 0 && (
+      {walletTokens.length > 0 && (
         <div>
-          <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-3">Tokens Agregados</h3>
-          <div className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-slate-500 border-b border-slate-800 text-xs uppercase tracking-wider">
-                  <th className="text-left py-2 px-4">Token</th>
-                  <th className="text-right py-2 px-4">Saldo Total</th>
-                  <th className="text-right py-2 px-4">Valor</th>
-                  <th className="text-right py-2 px-4">% Portfolio</th>
-                  <th className="text-right py-2 px-4">24h</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tokenList.map((t) => {
-                  const pct = grand > 0 ? (t.totalValue/grand)*100 : 0;
-                  return (
-                    <tr key={t.symbol} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
-                          <TokenIcon symbol={t.symbol} logo={t.logoURI} />
-                          <div><span className="text-white font-medium">{t.symbol}</span><p className="text-slate-500 text-xs">{t.name}</p></div>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-right text-slate-300 font-mono">{fmt(t.totalBalance, 4)}</td>
-                      <td className="py-3 px-4 text-right text-white font-semibold">{t.totalValue > 0 ? fmtUSD(t.totalValue) : "—"}</td>
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <div className="w-16 h-1.5 bg-slate-700 rounded-full overflow-hidden">
-                            <div className="h-full bg-blue-500 rounded-full" style={{ width:`${Math.min(pct,100)}%` }} />
-                          </div>
-                          <span className="text-slate-400 text-xs w-10 text-right">{pct.toFixed(1)}%</span>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-right">{t.price > 0 ? <ChangeCell v={t.change24h} /> : <span className="text-slate-600">—</span>}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-3">
+            Tokens da Carteira <span className="text-slate-600 normal-case">· {fmtUSD(walletValue)}</span>
+          </h3>
+          {renderTable(walletTokens, walletValue)}
+        </div>
+      )}
+
+      {defiTokens.length > 0 && (
+        <div>
+          <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-3">
+            Posições DeFi 🌾 <span className="text-slate-600 normal-case">· {fmtUSD(defiValue)}</span>
+          </h3>
+          {renderTable(defiTokens, defiValue)}
         </div>
       )}
 
