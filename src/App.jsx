@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from "react";
 // ─── Network config ───────────────────────────────────────────────────────────
 const NETWORKS = {
   Ethereum: { rpc: "eth-mainnet",     explorer: "https://etherscan.io",            nativeSymbol: "ETH",  nativeName: "Ethereum",  nativeCoingeckoId: "ethereum",    color: "#627EEA", emoji: "⟠" },
-  Polygon:  { rpc: "polygon-mainnet", explorer: "https://polygonscan.com",          nativeSymbol: "POL",  nativeName: "Polygon",   nativeCoingeckoId: "matic-network", color: "#8247E5", emoji: "⬡" },
+  Polygon:  { rpc: "polygon-mainnet", explorer: "https://polygonscan.com",          nativeSymbol: "POL",  nativeName: "Polygon",   nativeCoingeckoId: "polygon-ecosystem-token", color: "#8247E5", emoji: "⬡" },
   Arbitrum: { rpc: "arb-mainnet",     explorer: "https://arbiscan.io",             nativeSymbol: "ETH",  nativeName: "Ethereum",  nativeCoingeckoId: "ethereum",    color: "#28A0F0", emoji: "🔵" },
   Base:     { rpc: "base-mainnet",    explorer: "https://basescan.org",            nativeSymbol: "ETH",  nativeName: "Ethereum",  nativeCoingeckoId: "ethereum",    color: "#0052FF", emoji: "🔷" },
   Optimism: { rpc: "opt-mainnet",     explorer: "https://optimistic.etherscan.io", nativeSymbol: "ETH",  nativeName: "Ethereum",  nativeCoingeckoId: "ethereum",    color: "#FF0420", emoji: "🔴" },
@@ -45,7 +45,7 @@ const CG = {
   UNI:"uniswap", AAVE:"aave", LINK:"chainlink", CRV:"curve-dao-token",
   MKR:"maker", SNX:"havven", COMP:"compound-governance-token", BAL:"balancer", YFI:"yearn-finance",
   LDO:"lido-dao", RPL:"rocket-pool", STETH:"staked-ether", RETH:"rocket-pool-eth",
-  MATIC:"matic-network", POL:"matic-network", WMATIC:"matic-network", ARB:"arbitrum", OP:"optimism",
+  MATIC:"polygon-ecosystem-token", POL:"polygon-ecosystem-token", WMATIC:"polygon-ecosystem-token", ARB:"arbitrum", OP:"optimism",
   BNB:"binancecoin", AVAX:"avalanche-2", FTM:"fantom", SOL:"solana", CAKE:"pancakeswap-token",
   SHIB:"shiba-inu", PEPE:"pepe", DOGE:"dogecoin", FLOKI:"floki",
   GRT:"the-graph", ENS:"ethereum-name-service",
