@@ -233,6 +233,99 @@ async function fetchTransactions(address, networkKey, apiKey) {
   } catch { return []; }
 }
 
+// ─── DeBank API ───────────────────────────────────────────────────────────────
+const DEBANK_BASE = "https://pro-openapi.debank.com/v1";
+
+async function debankGet(path, debankKey) {
+  const res = await fetch(`${DEBANK_BASE}${path}`, {
+    headers: { "AccessKey": debankKey },
+  });
+  if (!res.ok) throw new Error(`DeBank API error: ${res.status}`);
+  return res.json();
+}
+
+async function fetchDeBankPositions(address, debankKey) {
+  try {
+    const [protocols, tokenList] = await Promise.all([
+      debankGet(`/user/all_complex_protocol_list?id=${address}`, debankKey),
+      debankGet(`/user/all_token_list?id=${address}&is_all=false`, debankKey),
+    ]);
+
+    // Parse protocol positions
+    const positions = [];
+    for (const protocol of (protocols || [])) {
+      for (const portfolioItem of (protocol.portfolio_item_list || [])) {
+        const detail = portfolioItem.detail || {};
+        const type = portfolioItem.name || "Unknown";
+
+        // Get tokens involved
+        const supplyTokens = detail.supply_token_list || [];
+        const rewardTokens = detail.reward_token_list || [];
+        const borrowTokens = detail.borrow_token_list || [];
+
+        const supplyValue = supplyTokens.reduce((s, t) => s + (t.amount * t.price || 0), 0);
+        const rewardValue = rewardTokens.reduce((s, t) => s + (t.amount * t.price || 0), 0);
+        const borrowValue = borrowTokens.reduce((s, t) => s + (t.amount * t.price || 0), 0);
+        const netValue = supplyValue + rewardValue - borrowValue;
+
+        if (netValue < 0.01) continue;
+
+        // Determine position type
+        let posType = "Other";
+        const typeLower = type.toLowerCase();
+        if (typeLower.includes("lending") || typeLower.includes("supply") || typeLower.includes("deposit")) posType = "Lending";
+        else if (typeLower.includes("borrow")) posType = "Borrowing";
+        else if (typeLower.includes("liquidity") || typeLower.includes("pool") || typeLower.includes("lp")) posType = "Liquidity Pool";
+        else if (typeLower.includes("stake") || typeLower.includes("farm") || typeLower.includes("yield")) posType = "Staking";
+        else if (typeLower.includes("reward")) posType = "Rewards";
+        else if (typeLower.includes("locked") || typeLower.includes("vest")) posType = "Locked";
+
+        positions.push({
+          id: `${protocol.id}-${positions.length}`,
+          protocol: protocol.name,
+          protocolLogo: protocol.logo_url,
+          chain: protocol.chain,
+          type: posType,
+          rawType: type,
+          supplyTokens,
+          rewardTokens,
+          borrowTokens,
+          supplyValue,
+          rewardValue,
+          borrowValue,
+          netValue,
+          apy: portfolioItem.stats?.annual_yield_usd
+            ? (portfolioItem.stats.annual_yield_usd / netValue) * 100
+            : null,
+        });
+      }
+    }
+
+    // Token balances from DeBank (more accurate, includes all chains)
+    const tokens = (tokenList || [])
+      .filter((t) => t.amount > 0 && !isSpam({ symbol: t.symbol, name: t.name }))
+      .map((t) => ({
+        symbol: t.symbol,
+        name: t.name,
+        balance: t.amount,
+        price: t.price || 0,
+        change24h: 0,
+        logoURI: t.logo_url || null,
+        network: t.chain,
+        contractAddress: t.id !== t.chain ? t.id : null,
+        value: t.amount * (t.price || 0),
+      }))
+      .filter((t) => t.value > 0.01)
+      .sort((a, b) => b.value - a.value);
+
+    return { positions, tokens, error: null };
+  } catch (e) {
+    return { positions: [], tokens: [], error: e.message };
+  }
+}
+
+
+
 // ─── Mock data ────────────────────────────────────────────────────────────────
 const MOCK_NETWORKS = {
   Ethereum: [
@@ -294,9 +387,10 @@ const TxBadge = ({ type }) => {
 };
 
 // ─── Settings Modal ───────────────────────────────────────────────────────────
-function SettingsModal({ onClose, apiKey, setApiKey, coinGeckoKey, setCoinGeckoKey }) {
+function SettingsModal({ onClose, apiKey, setApiKey, coinGeckoKey, setCoinGeckoKey, debankKey, setDebankKey }) {
   const [key, setKey] = useState(apiKey);
   const [cgKey, setCgKey] = useState(coinGeckoKey);
+  const [dbKey, setDbKey] = useState(debankKey);
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
@@ -310,9 +404,12 @@ function SettingsModal({ onClose, apiKey, setApiKey, coinGeckoKey, setCoinGeckoK
         <label className="block text-slate-400 text-sm mb-1">CoinGecko Demo API Key</label>
         <input type="password" value={cgKey} onChange={(e) => setCgKey(e.target.value)} placeholder="ex: CG-xxxxxxxxxxxxxxxxxxxx"
           className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-emerald-500 mb-3" />
-        <p className="text-slate-500 text-xs mb-5 leading-relaxed">Ambas as chaves são guardadas apenas no teu browser. A chave CoinGecko melhora os preços e aumenta os limites da API.</p>
+        <label className="block text-slate-400 text-sm mb-1">DeBank API Key</label>
+        <input type="password" value={dbKey} onChange={(e) => setDbKey(e.target.value)} placeholder="ex: 3b420c42aed4..."
+          className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-purple-500 mb-3" />
+        <p className="text-slate-500 text-xs mb-5 leading-relaxed">Todas as chaves são guardadas apenas no teu browser. A DeBank key é necessária para tracking de posições DeFi reais.</p>
         <div className="flex gap-3">
-          <button onClick={() => { setApiKey(key); setCoinGeckoKey(cgKey); onClose(); }} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg py-2 text-sm font-medium transition-colors">Guardar</button>
+          <button onClick={() => { setApiKey(key); setCoinGeckoKey(cgKey); setDebankKey(dbKey); onClose(); }} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg py-2 text-sm font-medium transition-colors">Guardar</button>
           <button onClick={onClose} className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg py-2 text-sm transition-colors">Cancelar</button>
         </div>
       </div>
@@ -640,8 +737,9 @@ function OverviewView({ wallets, walletsData, apiKey }) {
           {!apiKey && <span className="text-xs bg-amber-900/40 border border-amber-700/40 text-amber-300 px-2 py-1 rounded-full">Dados demo</span>}
         </div>
         <div className="flex gap-8">
-          <div><p className="text-slate-400 text-xs">Carteiras</p><p className="text-blue-300 font-semibold">{wallets.length}</p></div>
+          <div><p className="text-slate-400 text-xs">Carteiras</p><p className="text-blue-300 font-semibold">{fmtUSD(grand)}</p></div>
           <div><p className="text-slate-400 text-xs">Tokens únicos</p><p className="text-slate-300 font-semibold">{tokenList.length}</p></div>
+          <div><p className="text-slate-400 text-xs">Nº Carteiras</p><p className="text-slate-300 font-semibold">{wallets.length}</p></div>
           <div><p className="text-slate-400 text-xs">Redes</p><p className="text-slate-300 font-semibold">7</p></div>
         </div>
       </div>
@@ -701,6 +799,209 @@ function OverviewView({ wallets, walletsData, apiKey }) {
   );
 }
 
+
+// ─── DeFi Position Card ───────────────────────────────────────────────────────
+const TYPE_COLORS = {
+  "Lending":       "bg-blue-900/40 text-blue-300 border-blue-700/40",
+  "Borrowing":     "bg-red-900/40 text-red-300 border-red-700/40",
+  "Liquidity Pool":"bg-purple-900/40 text-purple-300 border-purple-700/40",
+  "Staking":       "bg-amber-900/40 text-amber-300 border-amber-700/40",
+  "Rewards":       "bg-emerald-900/40 text-emerald-300 border-emerald-700/40",
+  "Locked":        "bg-slate-700 text-slate-300 border-slate-600",
+  "Other":         "bg-slate-800 text-slate-400 border-slate-700",
+};
+
+function DeFiPositionCard({ position }) {
+  const typeColor = TYPE_COLORS[position.type] || TYPE_COLORS["Other"];
+  const yearlyYield = position.apy ? (position.netValue * position.apy / 100) : null;
+
+  return (
+    <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4 hover:border-slate-500 transition-colors">
+      <div className="flex justify-between items-start mb-3">
+        <div className="flex items-center gap-3">
+          {position.protocolLogo ? (
+            <img src={position.protocolLogo} alt={position.protocol} className="w-9 h-9 rounded-xl object-cover" onError={(e) => { e.target.style.display="none"; }} />
+          ) : (
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-700 to-blue-700 flex items-center justify-center text-white font-bold text-sm">
+              {position.protocol[0]}
+            </div>
+          )}
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-white font-semibold">{position.protocol}</p>
+              <span className={`text-xs px-2 py-0.5 rounded-full border ${typeColor}`}>{position.type}</span>
+            </div>
+            <p className="text-slate-500 text-xs mt-0.5">{position.rawType} · {position.chain?.toUpperCase()}</p>
+          </div>
+        </div>
+        <div className="text-right">
+          <p className="text-white font-bold text-lg">${position.netValue.toFixed(2)}</p>
+          {position.apy !== null && (
+            <p className="text-emerald-400 text-sm">{position.apy.toFixed(2)}% APY</p>
+          )}
+        </div>
+      </div>
+
+      {/* Token details */}
+      <div className="space-y-1.5">
+        {position.supplyTokens.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {position.supplyTokens.map((t, i) => (
+              <div key={i} className="flex items-center gap-1.5 bg-slate-900/50 rounded-lg px-2 py-1">
+                {t.logo_url && <img src={t.logo_url} className="w-4 h-4 rounded-full" onError={(e) => { e.target.style.display="none"; }} />}
+                <span className="text-slate-300 text-xs font-medium">{t.symbol}</span>
+                <span className="text-slate-500 text-xs">{t.amount?.toFixed(4)}</span>
+                <span className="text-slate-400 text-xs">${(t.amount * t.price).toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {position.rewardTokens.length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-emerald-500 text-xs">Rewards:</span>
+            {position.rewardTokens.map((t, i) => (
+              <div key={i} className="flex items-center gap-1 bg-emerald-900/20 rounded-lg px-2 py-0.5">
+                <span className="text-emerald-300 text-xs">{t.symbol} {t.amount?.toFixed(4)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {position.borrowTokens.length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-red-400 text-xs">Dívida:</span>
+            {position.borrowTokens.map((t, i) => (
+              <div key={i} className="flex items-center gap-1 bg-red-900/20 rounded-lg px-2 py-0.5">
+                <span className="text-red-300 text-xs">{t.symbol} {t.amount?.toFixed(4)} (${(t.amount * t.price).toFixed(2)})</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {yearlyYield && (
+          <p className="text-slate-500 text-xs">Yield anual estimado: <span className="text-emerald-400">${yearlyYield.toFixed(2)}</span></p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── DeFi View ────────────────────────────────────────────────────────────────
+function DeFiView({ wallets, debankKey }) {
+  const [data, setData] = useState({ positions: [], tokens: [], loading: false, error: null, loaded: false });
+  const [filterType, setFilterType] = useState("all");
+
+  const loadAll = useCallback(async () => {
+    if (!debankKey || wallets.length === 0) return;
+    setData((p) => ({ ...p, loading: true, error: null }));
+
+    const allPositions = [];
+    const allTokens = {};
+
+    await Promise.allSettled(wallets.map(async (w) => {
+      const result = await fetchDeBankPositions(w.address, debankKey);
+      allPositions.push(...result.positions);
+      result.tokens.forEach((t) => {
+        const key = t.symbol.toUpperCase();
+        if (!allTokens[key]) allTokens[key] = { ...t, totalBalance: 0, totalValue: 0 };
+        allTokens[key].totalBalance += t.balance;
+        allTokens[key].totalValue += t.value;
+      });
+    }));
+
+    setData({
+      positions: allPositions.sort((a, b) => b.netValue - a.netValue),
+      tokens: Object.values(allTokens).sort((a, b) => b.totalValue - a.totalValue),
+      loading: false,
+      error: null,
+      loaded: true,
+    });
+  }, [wallets, debankKey]);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  const totalDeFi = data.positions.reduce((s, p) => s + p.netValue, 0);
+  const totalYearly = data.positions.reduce((s, p) => s + (p.apy ? p.netValue * p.apy / 100 : 0), 0);
+
+  const types = ["all", ...new Set(data.positions.map((p) => p.type))];
+  const filtered = filterType === "all" ? data.positions : data.positions.filter((p) => p.type === filterType);
+
+  if (!debankKey) return (
+    <div className="text-center py-20 text-slate-500">
+      <p className="text-4xl mb-4">🌾</p>
+      <p className="text-lg font-medium text-slate-300 mb-2">DeBank API não configurada</p>
+      <p className="text-sm mb-4">Adiciona a tua DeBank API key nas configurações para ver as posições DeFi reais.</p>
+      <button onClick={() => {}} className="text-blue-400 hover:text-blue-300 text-sm">⚙ Abrir configurações</button>
+    </div>
+  );
+
+  if (wallets.length === 0) return (
+    <div className="text-center py-20 text-slate-500">
+      <p className="text-4xl mb-4">👛</p>
+      <p>Adiciona carteiras para ver as posições DeFi.</p>
+    </div>
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-4">
+        <div className="bg-slate-800/50 rounded-xl border border-slate-700 p-4">
+          <p className="text-slate-400 text-xs mb-1">Total em DeFi</p>
+          <p className="text-2xl font-bold text-white">${totalDeFi.toFixed(2)}</p>
+        </div>
+        <div className="bg-slate-800/50 rounded-xl border border-slate-700 p-4">
+          <p className="text-slate-400 text-xs mb-1">Yield Anual Estimado</p>
+          <p className="text-2xl font-bold text-emerald-400">${totalYearly.toFixed(2)}</p>
+        </div>
+        <div className="bg-slate-800/50 rounded-xl border border-slate-700 p-4">
+          <p className="text-slate-400 text-xs mb-1">Posições Ativas</p>
+          <p className="text-2xl font-bold text-white">{data.positions.length}</p>
+        </div>
+      </div>
+
+      {/* Loading */}
+      {data.loading && (
+        <div className="flex flex-col items-center justify-center py-12 gap-3">
+          <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-slate-500 text-sm">A carregar posições DeFi via DeBank…</p>
+        </div>
+      )}
+
+      {/* Error */}
+      {data.error && (
+        <div className="bg-red-900/20 border border-red-700/40 rounded-xl p-4">
+          <p className="text-red-300 text-sm">Erro ao carregar: {data.error}</p>
+        </div>
+      )}
+
+      {/* Filter tabs */}
+      {data.positions.length > 0 && (
+        <div className="flex gap-2 flex-wrap">
+          {types.map((t) => (
+            <button key={t} onClick={() => setFilterType(t)}
+              className={`text-xs px-3 py-1.5 rounded-lg border transition-all ${filterType === t ? "bg-blue-600 border-blue-500 text-white" : "border-slate-700 text-slate-400 hover:text-white"}`}>
+              {t === "all" ? `Todas (${data.positions.length})` : `${t} (${data.positions.filter(p => p.type === t).length})`}
+            </button>
+          ))}
+          <button onClick={loadAll} className="text-xs px-3 py-1.5 rounded-lg border border-slate-700 text-slate-400 hover:text-white transition-all ml-auto">
+            ↻ Atualizar
+          </button>
+        </div>
+      )}
+
+      {/* Positions */}
+      <div className="space-y-3">
+        {filtered.map((p) => <DeFiPositionCard key={p.id} position={p} />)}
+        {data.loaded && filtered.length === 0 && !data.loading && (
+          <div className="text-center py-12 text-slate-500">
+            <p className="text-4xl mb-3">🌾</p>
+            <p>Nenhuma posição DeFi encontrada.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [wallets, setWallets] = useState(() => {
@@ -712,6 +1013,7 @@ export default function App() {
   const [showAddWallet, setShowAddWallet] = useState(false);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("chainview_api_key") || "");
   const [coinGeckoKey, setCoinGeckoKeyState] = useState(() => localStorage.getItem("chainview_cg_key") || "");
+  const [debankKey, setDebankKeyState] = useState(() => localStorage.getItem("chainview_debank_key") || "");
   const [walletsData, setWalletsData] = useState({});
 
   useEffect(() => { localStorage.setItem("chainview_wallets", JSON.stringify(wallets)); }, [wallets]);
@@ -777,6 +1079,12 @@ export default function App() {
     else localStorage.removeItem("chainview_cg_key");
   };
 
+  const setDebankKey = (key) => {
+    setDebankKeyState(key);
+    if (key) localStorage.setItem("chainview_debank_key", key);
+    else localStorage.removeItem("chainview_debank_key");
+  };
+
   const addWallet = (w) => {
     setWallets((prev) => prev.find((x) => x.address === w.address) ? prev : [...prev, w]);
     setSelectedWallet(w.address);
@@ -797,7 +1105,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} apiKey={apiKey} setApiKey={saveApiKey} coinGeckoKey={coinGeckoKey} setCoinGeckoKey={setCoinGeckoKey} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} apiKey={apiKey} setApiKey={saveApiKey} coinGeckoKey={coinGeckoKey} setCoinGeckoKey={setCoinGeckoKey} debankKey={debankKey} setDebankKey={setDebankKey} />}
       {showAddWallet && <AddWalletModal onClose={() => setShowAddWallet(false)} onAdd={addWallet} />}
 
       <header className="border-b border-slate-800 px-6 py-4 flex items-center justify-between sticky top-0 bg-slate-950/95 backdrop-blur-sm z-10">
@@ -812,7 +1120,7 @@ export default function App() {
         </div>
         <div className="flex items-center gap-2">
           <nav className="flex gap-1 bg-slate-900 border border-slate-800 rounded-xl p-1">
-            {[{id:"overview",label:"Visão Geral"},{id:"wallets",label:"Carteiras"}].map((n) => (
+            {[{id:"overview",label:"Visão Geral"},{id:"wallets",label:"Carteiras"},{id:"defi",label:"DeFi 🌾"}].map((n) => (
               <button key={n.id} onClick={() => setTab(n.id)}
                 className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${tab===n.id ? "bg-blue-600 text-white shadow" : "text-slate-400 hover:text-white"}`}>
                 {n.label}
@@ -856,6 +1164,8 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {tab === "defi" && <DeFiView wallets={wallets} debankKey={debankKey} />}
       </main>
     </div>
   );
