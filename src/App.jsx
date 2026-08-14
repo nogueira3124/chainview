@@ -1,5 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
-import { ReactFlow, Background, Controls, MiniMap, useNodesState } from "@xyflow/react";
+import {
+  ReactFlow, Background, Controls, MiniMap,
+  Handle, Position, MarkerType,
+  useNodesState, useEdgesState, useReactFlow,
+  addEdge, BaseEdge, EdgeLabelRenderer, getBezierPath,
+} from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
 // ─── Network config ───────────────────────────────────────────────────────────
@@ -816,9 +821,25 @@ function WalletDetail({ wallet, apiKey }) {
 }
 
 // ─── Canvas — node types ──────────────────────────────────────────────────────
+const HANDLE_STYLE = { width: 10, height: 10, background: "#3b82f6", border: "2px solid #0f172a" };
+
+function NodeHandles() {
+  // 4 handles per node so edges can attach from any side (connectionMode="loose"
+  // on ReactFlow lets these act as source or target)
+  return (
+    <>
+      <Handle type="source" position={Position.Top}    id="t" style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Right}  id="r" style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Bottom} id="b" style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Left}   id="l" style={HANDLE_STYLE} />
+    </>
+  );
+}
+
 function PortfolioNode({ data }) {
   return (
-    <div className="bg-gradient-to-br from-blue-950/90 to-purple-950/90 border border-blue-800/50 rounded-2xl p-5 shadow-2xl backdrop-blur-sm" style={{ width: 360 }}>
+    <div className="bg-gradient-to-br from-blue-950/90 to-purple-950/90 border border-blue-800/50 rounded-2xl p-5 shadow-2xl backdrop-blur-sm relative" style={{ width: 360 }}>
+      <NodeHandles />
       <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Portfólio Total</p>
       <p className="text-3xl font-bold text-white mb-3">{data.grand > 0 ? fmtUSD(data.grand) : "—"}</p>
       {data.grand > 0 && (
@@ -850,7 +871,8 @@ function WalletNode({ data }) {
   const topTokens = [...tokens].sort((a, b) => b.balance * b.price - a.balance * a.price).slice(0, 5);
   const total = tokens.reduce((s, t) => s + t.balance * t.price, 0);
   return (
-    <div className="bg-slate-800/95 border border-slate-700 rounded-xl p-4 shadow-xl backdrop-blur-sm" style={{ width: 250 }}>
+    <div className="bg-slate-800/95 border border-slate-700 rounded-xl p-4 shadow-xl backdrop-blur-sm relative" style={{ width: 250 }}>
+      <NodeHandles />
       <div className="flex items-start justify-between mb-3 gap-2">
         <div className="min-w-0 flex-1">
           <p className="text-white font-semibold text-sm truncate">{data.label || "Carteira"}</p>
@@ -876,9 +898,85 @@ function WalletNode({ data }) {
   );
 }
 
-// nodeTypes must be a stable reference — declared at module scope
+// ─── Canvas — custom edge with editable label ────────────────────────────────
+function CanvasEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, selected, markerEnd, style }) {
+  const rf = useReactFlow();
+  const label = data?.label || "";
+  const editing = !!data?.editing;
+  const [draft, setDraft] = useState(label);
+
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition,
+  });
+
+  const commit = () => {
+    rf.setEdges((eds) => eds.map((e) => e.id === id
+      ? { ...e, data: { ...e.data, label: draft.trim(), editing: false } }
+      : e
+    ));
+  };
+
+  const cancel = () => {
+    setDraft(label);
+    rf.setEdges((eds) => eds.map((e) => e.id === id
+      ? { ...e, data: { ...e.data, editing: false } }
+      : e
+    ));
+  };
+
+  // Highlight when selected
+  const edgeStyle = {
+    stroke: selected ? "#3b82f6" : "#64748b",
+    strokeWidth: selected ? 2.5 : 2,
+    ...style,
+  };
+
+  return (
+    <>
+      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={edgeStyle} />
+      <EdgeLabelRenderer>
+        <div
+          style={{
+            position: "absolute",
+            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+            pointerEvents: "all",
+          }}
+          className="nodrag nopan"
+        >
+          {editing ? (
+            <input
+              value={draft}
+              autoFocus
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commit();
+                if (e.key === "Escape") cancel();
+              }}
+              placeholder="legenda"
+              className="bg-slate-900 border border-blue-500 text-white text-xs px-2 py-0.5 rounded outline-none w-28"
+            />
+          ) : label ? (
+            <div className="bg-slate-800/95 border border-slate-600 text-slate-200 text-xs px-2 py-0.5 rounded shadow-lg">
+              {label}
+            </div>
+          ) : selected ? (
+            <div className="bg-slate-800/95 border border-slate-600 border-dashed text-slate-500 text-xs px-2 py-0.5 rounded shadow-lg italic">
+              dup-clique
+            </div>
+          ) : null}
+        </div>
+      </EdgeLabelRenderer>
+    </>
+  );
+}
+
+// nodeTypes/edgeTypes must be stable references — declared at module scope
 const CANVAS_NODE_TYPES = { portfolio: PortfolioNode, wallet: WalletNode };
+const CANVAS_EDGE_TYPES = { canvas: CanvasEdge };
 const CANVAS_POSITIONS_KEY = "chainview_canvas_positions";
+const CANVAS_EDGES_KEY = "chainview_canvas_edges";
+const DELETE_KEYS = ["Delete", "Backspace"];
 
 // ─── Canvas view ──────────────────────────────────────────────────────────────
 function CanvasView({ wallets, walletsData }) {
@@ -918,7 +1016,21 @@ function CanvasView({ wallets, walletsData }) {
     ];
   }, [wallets, walletsData]);
 
+  const loadSavedEdges = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(CANVAS_EDGES_KEY) || "[]");
+      // Restore markerEnd (which is stripped when saved as JSON marker objects can be tricky)
+      return raw.map((e) => ({
+        ...e,
+        type: "canvas",
+        markerEnd: e.data?.arrow ? { type: MarkerType.ArrowClosed, color: "#64748b", width: 20, height: 20 } : undefined,
+      }));
+    } catch { return []; }
+  };
+
   const [nodes, setNodes, onNodesChange] = useNodesState(buildNodes());
+  const [edges, setEdges, onEdgesChange] = useEdgesState(loadSavedEdges());
+  const [edgeMode, setEdgeMode] = useState("arrow"); // "arrow" | "line"
 
   // Rebuild nodes when data changes, preserving current dragged positions
   useEffect(() => {
@@ -931,6 +1043,17 @@ function CanvasView({ wallets, walletsData }) {
     });
   }, [buildNodes, setNodes]);
 
+  // Persist edges (strip transient `editing` flag before saving)
+  useEffect(() => {
+    try {
+      const clean = edges.map(({ markerEnd, ...e }) => ({
+        ...e,
+        data: { label: e.data?.label || "", arrow: !!markerEnd },
+      }));
+      localStorage.setItem(CANVAS_EDGES_KEY, JSON.stringify(clean));
+    } catch { /* ignore */ }
+  }, [edges]);
+
   const handleNodeDragStop = useCallback(() => {
     setNodes((current) => {
       const positions = {};
@@ -940,9 +1063,33 @@ function CanvasView({ wallets, walletsData }) {
     });
   }, [setNodes]);
 
+  const onConnect = useCallback((params) => {
+    const isArrow = edgeMode === "arrow";
+    setEdges((eds) => addEdge({
+      ...params,
+      type: "canvas",
+      data: { label: "", arrow: isArrow },
+      markerEnd: isArrow ? { type: MarkerType.ArrowClosed, color: "#64748b", width: 20, height: 20 } : undefined,
+    }, eds));
+  }, [edgeMode, setEdges]);
+
+  const onEdgeDoubleClick = useCallback((_evt, edge) => {
+    setEdges((eds) => eds.map((e) => e.id === edge.id
+      ? { ...e, data: { ...e.data, editing: true } }
+      : { ...e, data: { ...e.data, editing: false } }
+    ));
+  }, [setEdges]);
+
   const resetLayout = () => {
     try { localStorage.removeItem(CANVAS_POSITIONS_KEY); } catch { /* ignore */ }
     setNodes(buildNodes());
+  };
+
+  const clearEdges = () => {
+    if (edges.length === 0) return;
+    if (window.confirm(`Apagar todas as ${edges.length} setas?`)) {
+      setEdges([]);
+    }
   };
 
   if (wallets.length === 0) {
@@ -954,9 +1101,32 @@ function CanvasView({ wallets, walletsData }) {
     );
   }
 
+  const modeBtn = (mode, label, title) => (
+    <button
+      onClick={() => setEdgeMode(mode)}
+      title={title}
+      className={`px-3 py-1.5 text-xs font-medium transition-colors ${edgeMode===mode ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white hover:bg-slate-700"}`}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <div className="relative">
-      <div className="absolute top-3 right-3 z-10">
+      <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
+        <div className="flex bg-slate-800/90 border border-slate-700 rounded-lg overflow-hidden backdrop-blur-sm" title="Tipo de linha ao desenhar">
+          {modeBtn("arrow", "→ Seta", "Desenhar com ponta direcional")}
+          {modeBtn("line",  "─ Linha", "Desenhar sem ponta")}
+        </div>
+        {edges.length > 0 && (
+          <button
+            onClick={clearEdges}
+            className="text-xs bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors backdrop-blur-sm"
+            title="Apagar todas as setas"
+          >
+            Limpar setas
+          </button>
+        )}
         <button
           onClick={resetLayout}
           className="text-xs bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors backdrop-blur-sm"
@@ -965,20 +1135,29 @@ function CanvasView({ wallets, walletsData }) {
           ↺ Reset layout
         </button>
       </div>
+      <div className="absolute bottom-3 left-3 z-10 text-xs text-slate-500 pointer-events-none">
+        Arrasta de um cartão para outro para ligar · dup-clique numa seta para editar legenda · Delete para apagar
+      </div>
       <div
         style={{ width: "100%", height: "calc(100vh - 180px)", minHeight: 500 }}
         className="bg-slate-900/40 border border-slate-800 rounded-xl overflow-hidden"
       >
         <ReactFlow
           nodes={nodes}
+          edges={edges}
           onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
           onNodeDragStop={handleNodeDragStop}
+          onConnect={onConnect}
+          onEdgeDoubleClick={onEdgeDoubleClick}
           nodeTypes={CANVAS_NODE_TYPES}
+          edgeTypes={CANVAS_EDGE_TYPES}
+          connectionMode="loose"
+          deleteKeyCode={DELETE_KEYS}
           fitView
           fitViewOptions={{ padding: 0.2 }}
           minZoom={0.2}
           maxZoom={2}
-          nodesConnectable={false}
           nodesDraggable
           panOnDrag
           zoomOnScroll
