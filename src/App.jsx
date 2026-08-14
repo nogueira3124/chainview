@@ -971,16 +971,54 @@ function CanvasEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, ta
   );
 }
 
+function NoteNode({ id, data }) {
+  const rf = useReactFlow();
+  const [text, setText] = useState(data?.text || "");
+
+  // Sync when data.text changes externally (e.g. reload from storage)
+  useEffect(() => { setText(data?.text || ""); }, [data?.text]);
+
+  const commit = (newText) => {
+    setText(newText);
+    rf.setNodes((nds) => nds.map((n) => n.id === id
+      ? { ...n, data: { ...n.data, text: newText } }
+      : n
+    ));
+  };
+
+  return (
+    <div
+      className="bg-amber-950/50 border-2 border-amber-700/60 rounded-lg shadow-xl backdrop-blur-sm relative"
+      style={{ width: 220 }}
+    >
+      <NodeHandles />
+      <div className="px-3 pt-2 pb-1 border-b border-amber-800/40 flex items-center justify-between text-amber-400 text-[10px] uppercase tracking-wider font-semibold">
+        <span>Nota</span>
+        <span className="text-amber-700 text-xs">✎</span>
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => commit(e.target.value)}
+        placeholder="Escreve aqui…"
+        rows={5}
+        className="nodrag nopan nowheel w-full bg-transparent text-amber-100 text-sm p-3 resize-none outline-none placeholder-amber-800/60 font-normal leading-snug"
+        style={{ fontFamily: "inherit" }}
+      />
+    </div>
+  );
+}
+
 // nodeTypes/edgeTypes must be stable references — declared at module scope
-const CANVAS_NODE_TYPES = { portfolio: PortfolioNode, wallet: WalletNode };
+const CANVAS_NODE_TYPES = { portfolio: PortfolioNode, wallet: WalletNode, note: NoteNode };
 const CANVAS_EDGE_TYPES = { canvas: CanvasEdge };
 const CANVAS_POSITIONS_KEY = "chainview_canvas_positions";
 const CANVAS_EDGES_KEY = "chainview_canvas_edges";
+const CANVAS_NOTES_KEY = "chainview_canvas_notes";
 const DELETE_KEYS = ["Delete", "Backspace"];
 
 // ─── Canvas view ──────────────────────────────────────────────────────────────
 function CanvasView({ wallets, walletsData }) {
-  const buildNodes = useCallback(() => {
+  const buildDerivedNodes = useCallback(() => {
     let grand = 0, walletValue = 0, defiValue = 0;
     wallets.forEach((w) => {
       (walletsData[w.address] || []).forEach((t) => {
@@ -1001,6 +1039,7 @@ function CanvasView({ wallets, walletsData }) {
         type: "portfolio",
         position: saved.portfolio || { x: 40, y: 40 },
         data: { grand, walletValue, defiValue, walletPct, defiPct, numWallets: wallets.length },
+        deletable: false,
       },
       ...wallets.map((w, i) => ({
         id: `wallet-${w.address}`,
@@ -1012,14 +1051,27 @@ function CanvasView({ wallets, walletsData }) {
           tokens: walletsData[w.address] || [],
           loading: !walletsData[w.address],
         },
+        deletable: false,
       })),
     ];
   }, [wallets, walletsData]);
 
+  const loadSavedNotes = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(CANVAS_NOTES_KEY) || "[]");
+      return raw.map((n) => ({
+        id: n.id,
+        type: "note",
+        position: n.position || { x: 200, y: 200 },
+        data: { text: n.text || "" },
+        deletable: true,
+      }));
+    } catch { return []; }
+  };
+
   const loadSavedEdges = () => {
     try {
       const raw = JSON.parse(localStorage.getItem(CANVAS_EDGES_KEY) || "[]");
-      // Restore markerEnd (which is stripped when saved as JSON marker objects can be tricky)
       return raw.map((e) => ({
         ...e,
         type: "canvas",
@@ -1028,20 +1080,32 @@ function CanvasView({ wallets, walletsData }) {
     } catch { return []; }
   };
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(buildNodes());
+  const [nodes, setNodes, onNodesChange] = useNodesState([...buildDerivedNodes(), ...loadSavedNotes()]);
   const [edges, setEdges, onEdgesChange] = useEdgesState(loadSavedEdges());
   const [edgeMode, setEdgeMode] = useState("arrow"); // "arrow" | "line"
 
-  // Rebuild nodes when data changes, preserving current dragged positions
+  // Rebuild derived nodes when data changes, preserving positions and notes
   useEffect(() => {
     setNodes((prev) => {
-      const fresh = buildNodes();
-      return fresh.map((n) => {
-        const existing = prev.find((p) => p.id === n.id);
-        return existing ? { ...n, position: existing.position } : n;
-      });
+      const fresh = buildDerivedNodes();
+      const notes = prev.filter((n) => n.type === "note");
+      return [
+        ...fresh.map((n) => {
+          const existing = prev.find((p) => p.id === n.id);
+          return existing ? { ...n, position: existing.position } : n;
+        }),
+        ...notes,
+      ];
     });
-  }, [buildNodes, setNodes]);
+  }, [buildDerivedNodes, setNodes]);
+
+  // Persist notes (position + text) whenever nodes change
+  useEffect(() => {
+    const notes = nodes
+      .filter((n) => n.type === "note")
+      .map((n) => ({ id: n.id, position: n.position, text: n.data?.text || "" }));
+    try { localStorage.setItem(CANVAS_NOTES_KEY, JSON.stringify(notes)); } catch { /* ignore */ }
+  }, [nodes]);
 
   // Persist edges (strip transient `editing` flag before saving)
   useEffect(() => {
@@ -1056,8 +1120,12 @@ function CanvasView({ wallets, walletsData }) {
 
   const handleNodeDragStop = useCallback(() => {
     setNodes((current) => {
+      // Only persist positions of derived nodes (portfolio + wallets) here;
+      // notes are persisted in full by the notes useEffect above.
       const positions = {};
-      current.forEach((n) => { positions[n.id] = n.position; });
+      current.forEach((n) => {
+        if (n.type !== "note") positions[n.id] = n.position;
+      });
       try { localStorage.setItem(CANVAS_POSITIONS_KEY, JSON.stringify(positions)); } catch { /* ignore */ }
       return current;
     });
@@ -1080,9 +1148,29 @@ function CanvasView({ wallets, walletsData }) {
     ));
   }, [setEdges]);
 
+  const addNote = () => {
+    setNodes((prev) => {
+      const noteCount = prev.filter((n) => n.type === "note").length;
+      const offset = noteCount * 30;
+      const newNote = {
+        id: `note-${Date.now()}`,
+        type: "note",
+        position: { x: 500 + offset, y: 100 + offset },
+        data: { text: "" },
+        deletable: true,
+        selected: true,
+      };
+      return [...prev.map((n) => ({ ...n, selected: false })), newNote];
+    });
+  };
+
   const resetLayout = () => {
     try { localStorage.removeItem(CANVAS_POSITIONS_KEY); } catch { /* ignore */ }
-    setNodes(buildNodes());
+    setNodes((prev) => {
+      const fresh = buildDerivedNodes();
+      const notes = prev.filter((n) => n.type === "note");
+      return [...fresh, ...notes];
+    });
   };
 
   const clearEdges = () => {
@@ -1114,6 +1202,13 @@ function CanvasView({ wallets, walletsData }) {
   return (
     <div className="relative">
       <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
+        <button
+          onClick={addNote}
+          className="text-xs bg-amber-900/60 hover:bg-amber-800/80 border border-amber-700/60 text-amber-200 hover:text-white px-3 py-1.5 rounded-lg transition-colors backdrop-blur-sm font-medium"
+          title="Adicionar uma nota solta"
+        >
+          + Nota
+        </button>
         <div className="flex bg-slate-800/90 border border-slate-700 rounded-lg overflow-hidden backdrop-blur-sm" title="Tipo de linha ao desenhar">
           {modeBtn("arrow", "→ Seta", "Desenhar com ponta direcional")}
           {modeBtn("line",  "─ Linha", "Desenhar sem ponta")}
@@ -1130,16 +1225,16 @@ function CanvasView({ wallets, walletsData }) {
         <button
           onClick={resetLayout}
           className="text-xs bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors backdrop-blur-sm"
-          title="Voltar à disposição inicial dos cartões"
+          title="Voltar à disposição inicial dos cartões (mantém as notas e setas)"
         >
           ↺ Reset layout
         </button>
       </div>
       <div className="absolute bottom-3 left-3 z-10 text-xs text-slate-500 pointer-events-none">
-        Arrasta de um cartão para outro para ligar · dup-clique numa seta para editar legenda · Delete para apagar
+        Arrasta de um cartão para outro para ligar · dup-clique numa seta para editar legenda · Delete para apagar (setas e notas)
       </div>
       <div
-        style={{ width: "100%", height: "calc(100vh - 180px)", minHeight: 500 }}
+        style={{ width: "100%", height: "calc(100vh - 110px)", minHeight: 500 }}
         className="bg-slate-900/40 border border-slate-800 rounded-xl overflow-hidden"
       >
         <ReactFlow
@@ -1165,7 +1260,11 @@ function CanvasView({ wallets, walletsData }) {
           <Background color="#1e293b" gap={20} size={1} />
           <Controls />
           <MiniMap
-            nodeColor={(n) => (n.type === "portfolio" ? "#6366f1" : "#3b82f6")}
+            nodeColor={(n) => {
+              if (n.type === "portfolio") return "#6366f1";
+              if (n.type === "note") return "#d97706";
+              return "#3b82f6";
+            }}
             maskColor="rgba(15, 23, 42, 0.7)"
             style={{ background: "#1e293b" }}
           />
@@ -1511,9 +1610,12 @@ export default function App() {
         </div>
       </header>
 
+      {tab === "canvas" ? (
+        <main className="px-3 sm:px-4 py-3">
+          <CanvasView wallets={wallets} walletsData={walletsData} />
+        </main>
+      ) : (
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
-        {tab === "canvas" && <CanvasView wallets={wallets} walletsData={walletsData} />}
-
         {tab === "wallets" && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="space-y-3">
@@ -1547,6 +1649,7 @@ export default function App() {
 
         {tab === "defi" && <DeFiView wallets={wallets} walletsData={walletsData} />}
       </main>
+      )}
     </div>
   );
 }
