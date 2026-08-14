@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
+import { ReactFlow, Background, Controls, MiniMap, useNodesState } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 
 // ─── Network config ───────────────────────────────────────────────────────────
 const NETWORKS = {
@@ -813,129 +815,183 @@ function WalletDetail({ wallet, apiKey }) {
   );
 }
 
-// ─── Overview ─────────────────────────────────────────────────────────────────
-function OverviewView({ wallets, walletsData, apiKey }) {
-  const allTokens = {};
-  let grand = 0;
-  let walletValue = 0;
-  let defiValue = 0;
-  wallets.forEach((w) => {
-    (walletsData[w.address] || []).forEach((t) => {
-      const val = t.balance * t.price;
-      grand += val;
-      const isDeFi = !!detectDeFiPosition(t);
-      if (isDeFi) defiValue += val; else walletValue += val;
-      const key = t.symbol.toUpperCase();
-      if (!allTokens[key]) allTokens[key] = { ...t, totalBalance: 0, totalValue: 0, isDeFi };
-      allTokens[key].totalBalance += t.balance;
-      allTokens[key].totalValue += val;
-    });
-  });
-  const tokenList = Object.values(allTokens).sort((a, b) => b.totalValue - a.totalValue);
-  const walletTokens = tokenList.filter((t) => !t.isDeFi);
-  const defiTokens = tokenList.filter((t) => t.isDeFi);
-  const walletPct = grand > 0 ? (walletValue / grand) * 100 : 0;
-  const defiPct = grand > 0 ? (defiValue / grand) * 100 : 0;
-
-  const renderTable = (list, sectionTotal) => (
-    <div className="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-slate-500 border-b border-slate-800 text-xs uppercase tracking-wider">
-            <th className="text-left py-2 px-4">Token</th>
-            <th className="text-right py-2 px-4">Saldo Total</th>
-            <th className="text-right py-2 px-4">Valor</th>
-            <th className="text-right py-2 px-4">% Secção</th>
-            <th className="text-right py-2 px-4">24h</th>
-          </tr>
-        </thead>
-        <tbody>
-          {list.map((t) => {
-            const pct = sectionTotal > 0 ? (t.totalValue / sectionTotal) * 100 : 0;
-            return (
-              <tr key={t.symbol} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
-                <td className="py-3 px-4">
-                  <div className="flex items-center gap-2">
-                    <TokenIcon symbol={t.symbol} logo={t.logoURI} />
-                    <div><span className="text-white font-medium">{t.symbol}</span><p className="text-slate-500 text-xs">{t.name}</p></div>
-                  </div>
-                </td>
-                <td className="py-3 px-4 text-right text-slate-300 font-mono">{fmt(t.totalBalance, 4)}</td>
-                <td className="py-3 px-4 text-right text-white font-semibold">{t.totalValue > 0 ? fmtUSD(t.totalValue) : "—"}</td>
-                <td className="py-3 px-4 text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    <div className="w-16 h-1.5 bg-slate-700 rounded-full overflow-hidden">
-                      <div className={`h-full rounded-full ${t.isDeFi ? "bg-emerald-500" : "bg-blue-500"}`} style={{ width: `${Math.min(pct, 100)}%` }} />
-                    </div>
-                    <span className="text-slate-400 text-xs w-10 text-right">{pct.toFixed(1)}%</span>
-                  </div>
-                </td>
-                <td className="py-3 px-4 text-right">{t.price > 0 ? <ChangeCell v={t.change24h} /> : <span className="text-slate-600">—</span>}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-
+// ─── Canvas — node types ──────────────────────────────────────────────────────
+function PortfolioNode({ data }) {
   return (
-    <div className="space-y-6">
-      <div className="bg-gradient-to-br from-blue-950/60 to-purple-950/60 border border-blue-800/40 rounded-2xl p-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <p className="text-slate-400 text-sm mb-1">Portfólio Total</p>
-            <p className="text-4xl font-bold text-white mb-4">{fmtUSD(grand)}</p>
-          </div>
-          {!apiKey && <span className="text-xs bg-amber-900/40 border border-amber-700/40 text-amber-300 px-2 py-1 rounded-full">Dados demo</span>}
+    <div className="bg-gradient-to-br from-blue-950/90 to-purple-950/90 border border-blue-800/50 rounded-2xl p-5 shadow-2xl backdrop-blur-sm" style={{ width: 360 }}>
+      <p className="text-slate-400 text-xs uppercase tracking-wider mb-1">Portfólio Total</p>
+      <p className="text-3xl font-bold text-white mb-3">{data.grand > 0 ? fmtUSD(data.grand) : "—"}</p>
+      {data.grand > 0 && (
+        <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden flex mb-3">
+          {data.walletPct > 0 && <div className="h-full bg-blue-500" style={{ width: `${data.walletPct}%` }} />}
+          {data.defiPct > 0 && <div className="h-full bg-emerald-500" style={{ width: `${data.defiPct}%` }} />}
         </div>
-
-        {grand > 0 && (
-          <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden flex mb-4">
-            {walletPct > 0 && <div className="h-full bg-blue-500" style={{ width: `${walletPct}%` }} />}
-            {defiPct > 0 && <div className="h-full bg-emerald-500" style={{ width: `${defiPct}%` }} />}
-          </div>
-        )}
-
-        <div className="flex gap-8 flex-wrap">
-          <div>
-            <p className="text-slate-400 text-xs flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />Carteiras</p>
-            <p className="text-blue-300 font-semibold">{fmtUSD(walletValue)} <span className="text-slate-500 text-xs font-normal">({walletPct.toFixed(1)}%)</span></p>
-          </div>
-          <div>
-            <p className="text-slate-400 text-xs flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />DeFi</p>
-            <p className="text-emerald-300 font-semibold">{fmtUSD(defiValue)} <span className="text-slate-500 text-xs font-normal">({defiPct.toFixed(1)}%)</span></p>
-          </div>
-          <div><p className="text-slate-400 text-xs">Tokens únicos</p><p className="text-slate-300 font-semibold">{tokenList.length}</p></div>
-          <div><p className="text-slate-400 text-xs">Nº Carteiras</p><p className="text-slate-300 font-semibold">{wallets.length}</p></div>
-          <div><p className="text-slate-400 text-xs">Redes</p><p className="text-slate-300 font-semibold">7</p></div>
+      )}
+      <div className="flex gap-4 flex-wrap text-xs">
+        <div>
+          <p className="text-slate-400 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-500 inline-block" />Carteiras</p>
+          <p className="text-blue-300 font-semibold">{fmtUSD(data.walletValue)}</p>
+        </div>
+        <div>
+          <p className="text-slate-400 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />DeFi</p>
+          <p className="text-emerald-300 font-semibold">{fmtUSD(data.defiValue)}</p>
+        </div>
+        <div>
+          <p className="text-slate-400">Nº Carteiras</p>
+          <p className="text-slate-300 font-semibold">{data.numWallets}</p>
         </div>
       </div>
+    </div>
+  );
+}
 
-      {walletTokens.length > 0 && (
-        <div>
-          <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-3">
-            Tokens da Carteira <span className="text-slate-600 normal-case">· {fmtUSD(walletValue)}</span>
-          </h3>
-          {renderTable(walletTokens, walletValue)}
+function WalletNode({ data }) {
+  const tokens = data.tokens || [];
+  const topTokens = [...tokens].sort((a, b) => b.balance * b.price - a.balance * a.price).slice(0, 5);
+  const total = tokens.reduce((s, t) => s + t.balance * t.price, 0);
+  return (
+    <div className="bg-slate-800/95 border border-slate-700 rounded-xl p-4 shadow-xl backdrop-blur-sm" style={{ width: 250 }}>
+      <div className="flex items-start justify-between mb-3 gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-white font-semibold text-sm truncate">{data.label || "Carteira"}</p>
+          <p className="text-slate-500 text-xs font-mono">{shortAddr(data.address)}</p>
+        </div>
+        <p className="text-white font-bold text-sm shrink-0">{data.loading ? "…" : fmtUSD(total)}</p>
+      </div>
+      {!data.loading && topTokens.length > 0 && (
+        <div className="space-y-1">
+          {topTokens.map((t, i) => (
+            <div key={i} className="flex justify-between text-xs gap-2">
+              <span className="text-slate-300 truncate">{t.symbol}</span>
+              <span className="text-slate-400 font-mono shrink-0">{fmtUSD(t.balance * t.price)}</span>
+            </div>
+          ))}
+          {tokens.length > 5 && <p className="text-slate-600 text-xs pt-1">+ {tokens.length - 5} outros</p>}
         </div>
       )}
-
-      {defiTokens.length > 0 && (
-        <div>
-          <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-3">
-            Posições DeFi 🌾 <span className="text-slate-600 normal-case">· {fmtUSD(defiValue)}</span>
-          </h3>
-          {renderTable(defiTokens, defiValue)}
-        </div>
+      {!data.loading && topTokens.length === 0 && (
+        <p className="text-slate-500 text-xs text-center py-2">sem tokens</p>
       )}
+    </div>
+  );
+}
 
-      {tokenList.length === 0 && (
-        <div className="text-center py-16 text-slate-500">
-          <p className="text-4xl mb-3">👛</p>
-          <p>Adiciona carteiras para ver o teu portfólio agregado.</p>
-        </div>
-      )}
+// nodeTypes must be a stable reference — declared at module scope
+const CANVAS_NODE_TYPES = { portfolio: PortfolioNode, wallet: WalletNode };
+const CANVAS_POSITIONS_KEY = "chainview_canvas_positions";
+
+// ─── Canvas view ──────────────────────────────────────────────────────────────
+function CanvasView({ wallets, walletsData }) {
+  const buildNodes = useCallback(() => {
+    let grand = 0, walletValue = 0, defiValue = 0;
+    wallets.forEach((w) => {
+      (walletsData[w.address] || []).forEach((t) => {
+        const val = t.balance * t.price;
+        grand += val;
+        if (detectDeFiPosition(t)) defiValue += val; else walletValue += val;
+      });
+    });
+    const walletPct = grand > 0 ? (walletValue / grand) * 100 : 0;
+    const defiPct = grand > 0 ? (defiValue / grand) * 100 : 0;
+
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(CANVAS_POSITIONS_KEY) || "{}"); } catch { /* ignore */ }
+
+    return [
+      {
+        id: "portfolio",
+        type: "portfolio",
+        position: saved.portfolio || { x: 40, y: 40 },
+        data: { grand, walletValue, defiValue, walletPct, defiPct, numWallets: wallets.length },
+      },
+      ...wallets.map((w, i) => ({
+        id: `wallet-${w.address}`,
+        type: "wallet",
+        position: saved[`wallet-${w.address}`] || { x: 40 + (i % 3) * 280, y: 260 + Math.floor(i / 3) * 240 },
+        data: {
+          address: w.address,
+          label: w.label,
+          tokens: walletsData[w.address] || [],
+          loading: !walletsData[w.address],
+        },
+      })),
+    ];
+  }, [wallets, walletsData]);
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(buildNodes());
+
+  // Rebuild nodes when data changes, preserving current dragged positions
+  useEffect(() => {
+    setNodes((prev) => {
+      const fresh = buildNodes();
+      return fresh.map((n) => {
+        const existing = prev.find((p) => p.id === n.id);
+        return existing ? { ...n, position: existing.position } : n;
+      });
+    });
+  }, [buildNodes, setNodes]);
+
+  const handleNodeDragStop = useCallback(() => {
+    setNodes((current) => {
+      const positions = {};
+      current.forEach((n) => { positions[n.id] = n.position; });
+      try { localStorage.setItem(CANVAS_POSITIONS_KEY, JSON.stringify(positions)); } catch { /* ignore */ }
+      return current;
+    });
+  }, [setNodes]);
+
+  const resetLayout = () => {
+    try { localStorage.removeItem(CANVAS_POSITIONS_KEY); } catch { /* ignore */ }
+    setNodes(buildNodes());
+  };
+
+  if (wallets.length === 0) {
+    return (
+      <div className="text-center py-16 text-slate-500">
+        <p className="text-4xl mb-3">🎨</p>
+        <p>Adiciona carteiras para começares a montar o teu canvas.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <div className="absolute top-3 right-3 z-10">
+        <button
+          onClick={resetLayout}
+          className="text-xs bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white px-3 py-1.5 rounded-lg transition-colors backdrop-blur-sm"
+          title="Voltar à disposição inicial dos cartões"
+        >
+          ↺ Reset layout
+        </button>
+      </div>
+      <div
+        style={{ width: "100%", height: "calc(100vh - 180px)", minHeight: 500 }}
+        className="bg-slate-900/40 border border-slate-800 rounded-xl overflow-hidden"
+      >
+        <ReactFlow
+          nodes={nodes}
+          onNodesChange={onNodesChange}
+          onNodeDragStop={handleNodeDragStop}
+          nodeTypes={CANVAS_NODE_TYPES}
+          fitView
+          fitViewOptions={{ padding: 0.2 }}
+          minZoom={0.2}
+          maxZoom={2}
+          nodesConnectable={false}
+          nodesDraggable
+          panOnDrag
+          zoomOnScroll
+        >
+          <Background color="#1e293b" gap={20} size={1} />
+          <Controls />
+          <MiniMap
+            nodeColor={(n) => (n.type === "portfolio" ? "#6366f1" : "#3b82f6")}
+            maskColor="rgba(15, 23, 42, 0.7)"
+            style={{ background: "#1e293b" }}
+          />
+        </ReactFlow>
+      </div>
     </div>
   );
 }
@@ -1153,7 +1209,7 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem("chainview_wallets") || "[]"); } catch { return []; }
   });
   const [selectedWallet, setSelectedWallet] = useState(null);
-  const [tab, setTab] = useState("overview");
+  const [tab, setTab] = useState("canvas");
   const [showSettings, setShowSettings] = useState(false);
   const [showAddWallet, setShowAddWallet] = useState(false);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("chainview_api_key") || "");
@@ -1265,7 +1321,7 @@ export default function App() {
         </div>
         <div className="flex items-center gap-2">
           <nav className="flex gap-1 bg-slate-900 border border-slate-800 rounded-xl p-1">
-            {[{id:"overview",label:"Visão Geral"},{id:"wallets",label:"Carteiras"},{id:"defi",label:"DeFi 🌾"}].map((n) => (
+            {[{id:"canvas",label:"Canvas"},{id:"wallets",label:"Carteiras"},{id:"defi",label:"DeFi 🌾"}].map((n) => (
               <button key={n.id} onClick={() => setTab(n.id)}
                 className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${tab===n.id ? "bg-blue-600 text-white shadow" : "text-slate-400 hover:text-white"}`}>
                 {n.label}
@@ -1277,7 +1333,7 @@ export default function App() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6">
-        {tab === "overview" && <OverviewView wallets={wallets} walletsData={walletsData} apiKey={apiKey} />}
+        {tab === "canvas" && <CanvasView wallets={wallets} walletsData={walletsData} />}
 
         {tab === "wallets" && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
